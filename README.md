@@ -8,6 +8,8 @@
 
 <p align="center">Live Markdown and Mermaid for your agent's side pane, in your terminal.</p>
 
+<p align="center">Using the Herdr desktop app? You want <a href="https://github.com/chappse6/herdr-blueprint-app">herdr-blueprint-app</a>, the mod for it.</p>
+
 <p align="center">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license">
   <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python 3.10+">
