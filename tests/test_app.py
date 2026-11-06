@@ -631,7 +631,7 @@ async def test_a_send_replaces_the_start_screen(tmp_path):
     app = start_app(Source("w1:p1", agent="claude", cwd=tmp_path))
     async with app.run_test(size=(80, 30)) as pilot:
         await pilot.pause(0.3)
-        inbox.send({"kind": "text", "source": "# Plan", "title": "Plan"})
+        inbox.send({"kind": "text", "source": "# Plan", "title": "Plan"}, owner="w1:p1")
         await wait_for(pilot, lambda: app.current and app.current.title == "Plan")
         assert not app.query(StartView)
         # a and o keep working after the first send.

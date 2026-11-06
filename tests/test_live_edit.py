@@ -183,7 +183,7 @@ async def test_sends_during_the_edit_wait_and_are_shown_if_nothing_was_sent(tmp_
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause(0.3)
         await start_editing(app, pilot, doc(tmp_path), fake)
-        inbox.send({"kind": "text", "source": "# Other", "title": "Other"})
+        inbox.send({"kind": "text", "source": "# Other", "title": "Other"}, owner="w1:p1")
         await pilot.pause(0.5)
         assert app.current.title == "flow.md"  # held
         fake.quit(0)  # nothing saved
@@ -196,7 +196,7 @@ async def test_sends_during_an_edit_that_was_sent_are_dropped(tmp_path):
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause(0.3)
         await start_editing(app, pilot, doc(tmp_path), fake)
-        inbox.send({"kind": "text", "source": "# Other", "title": "Other"})
+        inbox.send({"kind": "text", "source": "# Other", "title": "Other"}, owner="w1:p1")
         await pilot.pause(0.5)
         fake.save("# Flow\n\nnew line\n")
         fake.quit(0)
@@ -342,7 +342,7 @@ async def test_a_held_send_that_replaces_sent_text_reports_the_work_dropped(tmp_
         await wait_for(pilot, lambda: fake.sessions)
         fake.save("# Plan\n\nnew\n")
         await wait_for(pilot, lambda: app.preview_text is not None)
-        inbox.send({"kind": "text", "source": "# Other", "title": "Other"})
+        inbox.send({"kind": "text", "source": "# Other", "title": "Other"}, owner="w1:p1")
         await pilot.pause(0.5)
         fake.alive = False  # closed by hand: the saved work would be kept, but Plan is gone
         await wait_for(pilot, lambda: not app.editing and app.current.title == "Other", seconds=10)

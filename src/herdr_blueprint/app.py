@@ -324,6 +324,8 @@ class BlueprintApp(App[None]):
         self.settings = settings or config_store.load()
         # The pane Blueprint was opened next to; None outside herdr.
         self.source = source
+        # Whose inbox it reads: fixed at start, so a neighbour seen anew does not move it.
+        self._inbox_owner = source.pane_id if source else None
         herdr = os.environ.get("HERDR_BIN_PATH", "herdr")
         self._asker = asker or (lambda src: pane.ask_to_draw(herdr, src))
         self._finder = finder or pane.find_documents
@@ -413,7 +415,8 @@ class BlueprintApp(App[None]):
     async def _read_inbox(self) -> None:
         # A broken inbox must not close the viewer: say so in the header instead.
         try:
-            async for message in watch_inbox():
+            # Next to an agent pane, that pane's own inbox (`sources/inbox.py`).
+            async for message in watch_inbox(owner=self._inbox_owner):
                 if isinstance(message, Refresh):
                     await self.refresh_current(draw=message.draw)
                 else:

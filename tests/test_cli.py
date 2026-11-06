@@ -121,23 +121,23 @@ class Recorder:
 
 
 def test_open_focuses_the_viewer_already_open():
-    inbox.mark_viewer("w1:pV")
+    inbox.mark_viewer("w1:pV", owner="w1:p1")
     run = Recorder()
     assert cli.open_viewer("herdr", "w1:p1", run=run, exists=lambda herdr, pane_id: True) == 0
     assert run.calls == [["herdr", "plugin", "pane", "focus", "w1:pV"]]
 
 
 def test_open_forgets_closed_viewers_and_opens_a_new_one():
-    inbox.mark_viewer("w1:pGone")
+    inbox.mark_viewer("w1:pGone", owner="w1:p1")
     run = Recorder()
     assert cli.open_viewer("herdr", "w1:p1", run=run, exists=lambda herdr, pane_id: False) == 0
     assert run.calls == [cli.open_command("herdr", "w1:p1")]
-    assert inbox.viewer_panes() == []
+    assert inbox.viewer_panes(owner="w1:p1") == []
 
 
 def test_open_opens_a_new_viewer_when_focus_fails():
     # A viewer run by hand in a shell pane is not a plugin pane herdr can focus.
-    inbox.mark_viewer("w1:pShell")
+    inbox.mark_viewer("w1:pShell", owner="w1:p1")
     run = Recorder(focus_code=1)
     cli.open_viewer("herdr", "w1:p1", run=run, exists=lambda herdr, pane_id: True)
     assert run.calls[-1] == cli.open_command("herdr", "w1:p1")
@@ -151,7 +151,7 @@ def test_the_viewer_knows_its_neighbor_and_records_itself(monkeypatch):
             seen["source"] = source
 
         def run(self):
-            seen["record"] = inbox.viewer_panes()
+            seen["record"] = inbox.viewer_panes(owner="w1:p1")
 
     monkeypatch.setattr("herdr_blueprint.app.BlueprintApp", FakeApp)
     monkeypatch.setattr(
@@ -163,7 +163,7 @@ def test_the_viewer_knows_its_neighbor_and_records_itself(monkeypatch):
     assert cli.main([]) == 0
     assert seen["source"] == pane.Source("w1:p1", agent="claude")
     assert seen["record"] == ["w1:pV"]
-    assert inbox.viewer_panes() == []  # cleared on close
+    assert inbox.viewer_panes(owner="w1:p1") == []  # cleared on close
 
 
 def test_focused_pane_id_prefers_the_given_pane():

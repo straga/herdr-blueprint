@@ -51,15 +51,30 @@ def open_command(herdr: str, pane_id: str | None) -> list[str]:
 
 
 def open_viewer(herdr: str, pane_id: str | None, run=subprocess.run, exists=pane.pane_exists) -> int:
-    """Focus a viewer already open in this workspace, or open one next to `pane_id`."""
-    for existing in inbox.viewer_panes():
+    """Focus the viewer already open next to `pane_id`, or open one there. Outside a pane, the
+    viewer with no neighbour."""
+    for existing in inbox.viewer_panes(owner=pane_id):
         if not exists(herdr, existing):
-            inbox.clear_viewer(existing)  # its pane was closed without cleanup
+            inbox.clear_viewer(existing, owner=pane_id)  # its pane was closed without cleanup
             continue
         # Fails for a viewer run by hand in a shell pane: that is not a plugin pane.
         if run([herdr, "plugin", "pane", "focus", existing]).returncode == 0:
             return 0
     return run(open_command(herdr, pane_id)).returncode
+
+
+def own_inbox(herdr: str, own_pane: str | None, exists=None) -> str | None:
+    """The agent pane whose inbox an agent in `own_pane` writes to and asks about: its own while a
+    viewer of its own is open; None — the workspace's, as before. A record left by a viewer closed
+    without cleanup is dropped, so sends do not go where no one reads."""
+    if not own_pane:
+        return None
+    exists = exists or pane.pane_exists
+    for viewer in inbox.viewer_panes(owner=own_pane):
+        if exists(herdr, viewer):
+            return own_pane
+        inbox.clear_viewer(viewer, owner=own_pane)
+    return None
 
 
 def read_stdin() -> str:
@@ -105,6 +120,11 @@ def main(argv: list[str] | None = None) -> int:
             pass
     args = _parser().parse_args(argv)
 
+    # An agent writes to and asks about the inbox of its own viewer, when it has one.
+    sender = None
+    if args.command in ("show", "send", "refresh", "status"):
+        sender = own_inbox(os.environ.get("HERDR_BIN_PATH", "herdr"), os.environ.get("HERDR_PANE_ID"))
+
     if args.command == "show":
         path = args.path.expanduser().resolve()
         if not path.is_file():
@@ -113,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
         if path.suffix.lower() not in VIEWABLE_SUFFIXES:
             print("herdr-blueprint: only .md, .markdown, .mmd and .mermaid files", file=sys.stderr)
             return 2
-        inbox.send({"kind": "file", "path": str(path), "draw": args.draw, "sent_by": "agent"})
+        inbox.send({"kind": "file", "path": str(path), "draw": args.draw, "sent_by": "agent"}, owner=sender)
         print(f"Sent to Blueprint: {path.name}")
         return 0
 
@@ -122,18 +142,19 @@ def main(argv: list[str] | None = None) -> int:
         if not source:
             print("herdr-blueprint: nothing on stdin", file=sys.stderr)
             return 2
-        inbox.send({"kind": "text", "source": source, "title": args.title, "draw": args.draw, "sent_by": "agent"})
+        inbox.send({"kind": "text", "source": source, "title": args.title, "draw": args.draw, "sent_by": "agent"},
+                   owner=sender)
         print(f"Sent to Blueprint: {args.title or 'snippet'}")
         return 0
 
     if args.command == "refresh":
-        inbox.send({"kind": "refresh", "draw": args.draw})
+        inbox.send({"kind": "refresh", "draw": args.draw}, owner=sender)
         print("Asked Blueprint to refresh")
         return 0
 
     if args.command == "status":
         herdr = os.environ.get("HERDR_BIN_PATH", "herdr")
-        viewing = any(pane.pane_exists(herdr, pane_id) for pane_id in inbox.viewer_panes())
+        viewing = any(pane.pane_exists(herdr, pane_id) for pane_id in inbox.viewer_panes(owner=sender))
         print("open" if viewing else "closed")
         return 0 if viewing else 1
 
@@ -168,18 +189,19 @@ def main(argv: list[str] | None = None) -> int:
 
     from .app import BlueprintApp
 
-    # Inside its herdr pane, the viewer records itself so `open` focuses it next time.
+    # Inside its herdr pane, the viewer records itself so `open` focuses it next time; opened next
+    # to an agent pane, as that pane's viewer, reading that pane's inbox.
     viewer_id = os.environ.get("HERDR_PANE_ID")
+    source_pane = os.environ.get(SOURCE_ENV) or None
     if viewer_id:
-        inbox.mark_viewer(viewer_id)
+        inbox.mark_viewer(viewer_id, owner=source_pane)
     try:
-        source_pane = os.environ.get(SOURCE_ENV)
         # If herdr did not answer yet, keep the pane id: the viewer looks again later.
         source = pane.source_of(herdr, source_pane) or (pane.Source(source_pane) if source_pane else None)
         BlueprintApp(source=source).run()
     finally:
         if viewer_id:
-            inbox.clear_viewer(viewer_id)
+            inbox.clear_viewer(viewer_id, owner=source_pane)
     return 0
 
 

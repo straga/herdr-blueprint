@@ -1,6 +1,12 @@
-"""Agent push: a file-based message queue, one folder per herdr workspace.
+"""Agent push: a file-based message queue, one folder per herdr workspace, and one inside it per
+agent pane that has a viewer of its own.
 
 Files instead of sockets keep this the same on macOS, Linux and Windows.
+
+A message is claimed by one viewer (`receive`), so a folder read by two viewers hands each message
+to whichever comes first. A viewer opened next to an agent pane therefore reads that pane's own
+folder, and the agent writes there while such a viewer is open (`cli.own_inbox`). A viewer with no
+neighbour, and an agent with no viewer of its own, keep to the workspace's folder, as before.
 """
 
 from __future__ import annotations
@@ -34,7 +40,12 @@ class Refresh:
     draw: bool = False
 
 
-def inbox_dir(workspace: str | None = None) -> Path:
+def _safe(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+
+
+def inbox_dir(workspace: str | None = None, owner: str | None = None) -> Path:
+    """The folder of `workspace`, or of the agent pane `owner` inside it."""
     workspace = workspace or os.environ.get("HERDR_WORKSPACE_ID") or "default"
     safe = re.sub(r"[^A-Za-z0-9_.-]", "_", workspace)
     # Workspace ids repeat across herdr sessions (each has a w1), so inside herdr
@@ -42,12 +53,13 @@ def inbox_dir(workspace: str | None = None) -> Path:
     socket = os.environ.get("HERDR_SOCKET_PATH")
     if socket:
         safe = f"{hashlib.sha256(socket.encode()).hexdigest()[:8]}-{safe}"
-    return Path(user_state_dir("herdr-blueprint")) / "inbox" / safe
+    folder = Path(user_state_dir("herdr-blueprint")) / "inbox" / safe
+    return folder / "panes" / _safe(owner) if owner else folder
 
 
-def send(message: dict, workspace: str | None = None) -> Path:
+def send(message: dict, workspace: str | None = None, owner: str | None = None) -> Path:
     """Write one message. The rename makes it appear complete or not at all."""
-    folder = inbox_dir(workspace)
+    folder = inbox_dir(workspace, owner)
     folder.mkdir(parents=True, exist_ok=True)
     name = f"{time.time_ns()}-{uuid.uuid4().hex[:8]}.json"
     tmp = folder / f".{name}.tmp"
@@ -63,20 +75,22 @@ def send(message: dict, workspace: str | None = None) -> Path:
 VIEWERS_DIR = "viewers"
 
 
-def _viewer_record(pane_id: str, workspace: str | None) -> Path:
-    return inbox_dir(workspace) / VIEWERS_DIR / re.sub(r"[^A-Za-z0-9_.-]", "_", pane_id)
+def _viewer_record(pane_id: str, workspace: str | None, owner: str | None = None) -> Path:
+    return inbox_dir(workspace, owner) / VIEWERS_DIR / _safe(pane_id)
 
 
-def mark_viewer(pane_id: str, workspace: str | None = None) -> None:
-    record = _viewer_record(pane_id, workspace)
+def mark_viewer(pane_id: str, workspace: str | None = None, owner: str | None = None) -> None:
+    """Record the viewer `pane_id`, the viewer of the agent pane `owner` when named."""
+    record = _viewer_record(pane_id, workspace, owner)
     record.parent.mkdir(parents=True, exist_ok=True)
     record.write_text(pane_id, encoding="utf-8")
 
 
-def viewer_panes(workspace: str | None = None) -> list[str]:
-    """Pane ids of the viewers that recorded themselves, newest first."""
+def viewer_panes(workspace: str | None = None, owner: str | None = None) -> list[str]:
+    """Pane ids of the viewers that recorded themselves, newest first: of the agent pane `owner`
+    when named, else those with no neighbour."""
     dated = []
-    for record in (inbox_dir(workspace) / VIEWERS_DIR).glob("*"):
+    for record in (inbox_dir(workspace, owner) / VIEWERS_DIR).glob("*"):
         try:
             dated.append((record.stat().st_mtime, record.read_text(encoding="utf-8").strip()))
         except OSError:
@@ -85,8 +99,8 @@ def viewer_panes(workspace: str | None = None) -> list[str]:
     return [pane_id for _mtime, pane_id in dated if pane_id]
 
 
-def clear_viewer(pane_id: str, workspace: str | None = None) -> None:
-    _viewer_record(pane_id, workspace).unlink(missing_ok=True)
+def clear_viewer(pane_id: str, workspace: str | None = None, owner: str | None = None) -> None:
+    _viewer_record(pane_id, workspace, owner).unlink(missing_ok=True)
 
 
 def _sent_at(data: dict, now: float) -> float:
@@ -142,12 +156,13 @@ def _pending(folder: Path) -> list[Path]:
     return sorted(p for p in folder.glob("*.json") if not p.name.startswith("."))
 
 
-async def watch_inbox(workspace: str | None = None) -> AsyncIterator[Item | Refresh]:
-    """Yield the newest item already waiting, then each new message.
+async def watch_inbox(workspace: str | None = None, owner: str | None = None) -> AsyncIterator[Item | Refresh]:
+    """Yield the newest item already waiting, then each new message; of the agent pane `owner` when
+    named.
 
     Older waiting items and refreshes are dropped: the viewer shows one thing.
     """
-    folder = inbox_dir(workspace)
+    folder = inbox_dir(workspace, owner)
     folder.mkdir(parents=True, exist_ok=True)
     waiting = [item for path in _pending(folder) if isinstance(item := receive(path), Item)]
     if waiting:
