@@ -273,6 +273,20 @@ class ThemePicker(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+def in_cells(driver_class):
+    """`driver_class`, reporting the mouse in cells only.
+
+    Textual turns on SGR pixel reporting (`?1016h`) once the terminal answers its resize query.
+    Inside herdr the mode reaches the client's own terminal, and a client that maps pixels to cells
+    wrongly puts every click elsewhere: on a Retina screen a drag of the scrollbar at the right edge
+    selected text in the left half of the window. A driver with no pixel mode is returned as it is.
+    """
+    if not hasattr(driver_class, "_enable_mouse_pixels"):
+        return driver_class
+    return type(f"{driver_class.__name__}InCells", (driver_class,),
+                {"_enable_mouse_pixels": lambda self: None})
+
+
 class BlueprintApp(App[None]):
     CSS_PATH = "app.tcss"
     TITLE = "Blueprint"
@@ -320,7 +334,7 @@ class BlueprintApp(App[None]):
         pane_alive: Callable[[str], bool] | None = None,
         ask_on_open: bool = True,
     ) -> None:
-        super().__init__()
+        super().__init__(driver_class=in_cells(self.get_driver_class()))
         self.settings = settings or config_store.load()
         # The pane Blueprint was opened next to; None outside herdr.
         self.source = source
