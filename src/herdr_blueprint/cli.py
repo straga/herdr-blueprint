@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # Windows: no lock, the race stays as before
+    fcntl = None
 
 from .item import VIEWABLE_SUFFIXES
 from .sources import inbox, pane
@@ -55,14 +61,44 @@ def open_command(herdr: str, pane_id: str | None, focus: bool = True) -> list[st
 def open_viewer(herdr: str, pane_id: str | None, run=subprocess.run, exists=pane.pane_exists) -> int:
     """Focus the viewer already open next to `pane_id`, or open one there. Outside a pane, the
     viewer with no neighbour."""
-    for existing in inbox.viewer_panes(owner=pane_id):
-        if not exists(herdr, existing):
-            inbox.clear_viewer(existing, owner=pane_id)  # its pane was closed without cleanup
-            continue
-        # Fails for a viewer run by hand in a shell pane: that is not a plugin pane.
-        if run([herdr, "plugin", "pane", "focus", existing]).returncode == 0:
-            return 0
-    return run(open_command(herdr, pane_id)).returncode
+    with _pane_lock(pane_id) if pane_id else contextlib.nullcontext():
+        for existing in inbox.viewer_panes(owner=pane_id):
+            if not exists(herdr, existing):
+                inbox.clear_viewer(existing, owner=pane_id)  # its pane was closed without cleanup
+                continue
+            # Fails for a viewer run by hand in a shell pane: that is not a plugin pane.
+            if run([herdr, "plugin", "pane", "focus", existing]).returncode == 0:
+                return 0
+        if not pane_id:
+            return run(open_command(herdr, pane_id)).returncode
+        return 0 if _open_recorded(herdr, pane_id, focus=True, run=run) else 1
+
+
+@contextlib.contextmanager
+def _pane_lock(own_pane: str):
+    """One opener at a time for the agent pane `own_pane`: `open` and sends both open its viewer."""
+    folder = inbox.inbox_dir(owner=own_pane)
+    folder.mkdir(parents=True, exist_ok=True)
+    with open(folder / ".open.lock", "w") as lock:
+        if fcntl:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def _open_recorded(herdr: str, own_pane: str, focus: bool, run) -> bool:
+    """Open the viewer of `own_pane` and record it for the pane at once. A viewer records itself
+    only when it has started, a second later; an opener that left that to the viewer let the next
+    send see no viewer and open a second one."""
+    try:
+        done = run(open_command(herdr, own_pane, focus=focus), capture_output=True, text=True)
+    except OSError:
+        return False
+    if done.returncode != 0:
+        return False
+    viewer = _opened_pane_id(done.stdout)
+    if viewer:
+        inbox.mark_viewer(viewer, owner=own_pane)
+    return True
 
 
 def sender_opening_own_viewer(herdr: str, own_pane: str | None, sender: str | None) -> str | None:
@@ -72,11 +108,18 @@ def sender_opening_own_viewer(herdr: str, own_pane: str | None, sender: str | No
     the viewer cannot be opened, the send goes to the workspace's inbox, as before."""
     if sender or not own_pane:
         return sender
+    with _pane_lock(own_pane):
+        if own_inbox(herdr, own_pane):  # opened by `open` or another send while this one waited
+            return own_pane
+        return own_pane if _open_recorded(herdr, own_pane, focus=False, run=subprocess.run) else None
+
+
+def _opened_pane_id(stdout: str | None) -> str | None:
+    """The pane id in herdr's answer to `plugin pane open`, or None when it cannot be read."""
     try:
-        opened = subprocess.run(open_command(herdr, own_pane, focus=False)).returncode == 0
-    except OSError:
-        opened = False
-    return own_pane if opened else None
+        return json.loads(stdout or "")["result"]["plugin_pane"]["pane"]["pane_id"]
+    except (ValueError, KeyError, TypeError):
+        return None
 
 
 def own_inbox(herdr: str, own_pane: str | None, exists=None) -> str | None:

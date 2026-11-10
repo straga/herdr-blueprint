@@ -87,3 +87,62 @@ def test_when_herdr_is_missing_the_send_still_goes_to_the_workspace(monkeypatch)
 
     assert waiting(owner="w1:pA") == []
     assert len(waiting()) == 1
+
+
+class SlowHerdr(Recorder):
+    """herdr that takes a moment to open a pane and answers with its id, as the real one does."""
+
+    def __init__(self):
+        super().__init__()
+        self.count = 0
+
+    def __call__(self, cmd, **kwargs):
+        import json
+        import time
+
+        self.calls.append(cmd)
+        if cmd[1:4] == ["plugin", "pane", "open"]:
+            time.sleep(0.3)
+            self.count += 1
+            out = {"result": {"plugin_pane": {"pane": {"pane_id": f"w1:pV{self.count}"}}}}
+            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(out), stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+
+def test_two_sends_at_once_open_one_viewer(monkeypatch):
+    import threading
+
+    monkeypatch.setenv("HERDR_PANE_ID", "w1:pA")
+    monkeypatch.setattr("herdr_blueprint.sources.pane.pane_exists", lambda herdr, p: True)
+    run = SlowHerdr()
+    monkeypatch.setattr("herdr_blueprint.cli.subprocess.run", run)
+
+    def one(title):
+        cli.sender_opening_own_viewer("herdr", "w1:pA", cli.own_inbox("herdr", "w1:pA"))
+
+    threads = [threading.Thread(target=one, args=(t,)) for t in ("first", "second")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(opens(run.calls)) == 1
+
+
+def test_a_second_send_right_after_the_first_opens_nothing_new(monkeypatch):
+    run = SlowHerdr()
+    send(monkeypatch, "w1:pA", "first", run)
+    send(monkeypatch, "w1:pA", "second", run)
+
+    assert len(opens(run.calls)) == 1
+    assert len(waiting(owner="w1:pA")) == 2
+
+
+def test_open_and_a_send_right_after_it_open_one_viewer(monkeypatch):
+    run = SlowHerdr()
+    monkeypatch.setattr("herdr_blueprint.sources.pane.pane_exists", lambda herdr, p: True)
+    assert cli.open_viewer("herdr", "w1:pA", run=run) == 0
+    send(monkeypatch, "w1:pA", "right after open", run)
+
+    assert len(opens(run.calls)) == 1
+    assert len(waiting(owner="w1:pA")) == 1
