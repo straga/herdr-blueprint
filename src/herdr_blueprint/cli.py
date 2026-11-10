@@ -42,6 +42,10 @@ def focused_pane_id(herdr: str, pane_id: str | None, run=subprocess.run) -> str 
 
 # Set on the viewer by `open`: the pane it was opened next to.
 SOURCE_ENV = "BLUEPRINT_SOURCE_PANE"
+#: Set to "0" by an agent that opens its own viewer: the viewer then does not ask that agent to
+#: draw. The ask on opening is for a person who opens Blueprint; asked a second after the agent's
+#: own send, the agent drew its progress over the result it had just sent.
+ASK_ENV = "BLUEPRINT_ASK_ON_OPEN"
 
 
 def open_command(herdr: str, pane_id: str | None, focus: bool = True) -> list[str]:
@@ -54,7 +58,7 @@ def open_command(herdr: str, pane_id: str | None, focus: bool = True) -> list[st
     if focus:
         cmd.append("--focus")
     if pane_id:
-        cmd += ["--target-pane", pane_id, "--env", f"{SOURCE_ENV}={pane_id}"]
+        cmd += ["--target-pane", pane_id, "--env", f"{SOURCE_ENV}={pane_id}", "--env", f"{ASK_ENV}=0"]
     return cmd
 
 
@@ -259,7 +263,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         # If herdr did not answer yet, keep the pane id: the viewer looks again later.
         source = pane.source_of(herdr, source_pane) or (pane.Source(source_pane) if source_pane else None)
-        BlueprintApp(source=source).run()
+        quiet = {"ask_on_open": False} if os.environ.get(ASK_ENV) == "0" else {}
+        BlueprintApp(source=source, **quiet).run()
     finally:
         if viewer_id:
             inbox.clear_viewer(viewer_id, owner=source_pane)

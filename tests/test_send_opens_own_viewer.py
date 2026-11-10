@@ -146,3 +146,50 @@ def test_open_and_a_send_right_after_it_open_one_viewer(monkeypatch):
 
     assert len(opens(run.calls)) == 1
     assert len(waiting(owner="w1:pA")) == 1
+
+
+# --- a viewer an agent opened does not ask that agent to draw -------------------------
+
+def test_a_viewer_opened_by_an_agent_is_started_without_asking_it_to_draw(monkeypatch):
+    """The viewer asks its neighbour to draw on opening — meant for a person opening Blueprint.
+    Opened by the agent's own send, the ask came a second later, before the sent result showed,
+    and the agent drew its progress over the result."""
+    cmd = cli.open_command("herdr", "w1:pA", focus=False)
+    envs = [cmd[i + 1] for i, part in enumerate(cmd) if part == "--env"]
+    assert f"{cli.ASK_ENV}=0" in envs
+
+    seen = {}
+
+    class Up:
+        def __init__(self, source=None, **kwargs):
+            seen.update(kwargs)
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr("herdr_blueprint.app.BlueprintApp", Up)
+    monkeypatch.setattr("herdr_blueprint.sources.pane.source_of", lambda herdr, pane_id: None)
+    monkeypatch.setenv(cli.SOURCE_ENV, "w1:pA")
+    monkeypatch.setenv("HERDR_PANE_ID", "w1:pVA")
+    monkeypatch.setenv(cli.ASK_ENV, "0")
+    assert cli.main([]) == 0
+    assert seen.get("ask_on_open") is False
+
+
+def test_a_viewer_a_person_opens_still_asks(monkeypatch):
+    seen = {}
+
+    class Up:
+        def __init__(self, source=None, **kwargs):
+            seen.update(kwargs)
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr("herdr_blueprint.app.BlueprintApp", Up)
+    monkeypatch.setattr("herdr_blueprint.sources.pane.source_of", lambda herdr, pane_id: None)
+    monkeypatch.setenv(cli.SOURCE_ENV, "w1:pA")
+    monkeypatch.setenv("HERDR_PANE_ID", "w1:pVA")
+    monkeypatch.delenv("BLUEPRINT_ASK_ON_OPEN", raising=False)
+    assert cli.main([]) == 0
+    assert seen.get("ask_on_open", True) is True
