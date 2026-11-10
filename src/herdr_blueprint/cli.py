@@ -38,13 +38,15 @@ def focused_pane_id(herdr: str, pane_id: str | None, run=subprocess.run) -> str 
 SOURCE_ENV = "BLUEPRINT_SOURCE_PANE"
 
 
-def open_command(herdr: str, pane_id: str | None) -> list[str]:
-    """herdr command that opens the viewer to the right of `pane_id` and focuses it."""
+def open_command(herdr: str, pane_id: str | None, focus: bool = True) -> list[str]:
+    """herdr command that opens the viewer to the right of `pane_id`, focusing it unless told not to."""
     cmd = [
         herdr, "plugin", "pane", "open",
         "--plugin", PLUGIN_ID, "--entrypoint", "viewer",
-        "--placement", "split", "--direction", "right", "--focus",
+        "--placement", "split", "--direction", "right",
     ]
+    if focus:
+        cmd.append("--focus")
     if pane_id:
         cmd += ["--target-pane", pane_id, "--env", f"{SOURCE_ENV}={pane_id}"]
     return cmd
@@ -61,6 +63,20 @@ def open_viewer(herdr: str, pane_id: str | None, run=subprocess.run, exists=pane
         if run([herdr, "plugin", "pane", "focus", existing]).returncode == 0:
             return 0
     return run(open_command(herdr, pane_id)).returncode
+
+
+def sender_opening_own_viewer(herdr: str, own_pane: str | None, sender: str | None) -> str | None:
+    """The inbox a send goes to. An agent in a herdr pane without a viewer of its own gets one opened
+    beside it, without focus, and its send waits in that viewer's inbox until the viewer starts: an
+    agent that skips `open` would otherwise send to the workspace's inbox, unseen next to it. If
+    the viewer cannot be opened, the send goes to the workspace's inbox, as before."""
+    if sender or not own_pane:
+        return sender
+    try:
+        opened = subprocess.run(open_command(herdr, own_pane, focus=False)).returncode == 0
+    except OSError:
+        opened = False
+    return own_pane if opened else None
 
 
 def own_inbox(herdr: str, own_pane: str | None, exists=None) -> str | None:
@@ -133,6 +149,7 @@ def main(argv: list[str] | None = None) -> int:
         if path.suffix.lower() not in VIEWABLE_SUFFIXES:
             print("herdr-blueprint: only .md, .markdown, .mmd and .mermaid files", file=sys.stderr)
             return 2
+        sender = sender_opening_own_viewer(os.environ.get("HERDR_BIN_PATH", "herdr"), os.environ.get("HERDR_PANE_ID"), sender)
         inbox.send({"kind": "file", "path": str(path), "draw": args.draw, "sent_by": "agent"}, owner=sender)
         print(f"Sent to Blueprint: {path.name}")
         return 0
@@ -142,6 +159,7 @@ def main(argv: list[str] | None = None) -> int:
         if not source:
             print("herdr-blueprint: nothing on stdin", file=sys.stderr)
             return 2
+        sender = sender_opening_own_viewer(os.environ.get("HERDR_BIN_PATH", "herdr"), os.environ.get("HERDR_PANE_ID"), sender)
         inbox.send({"kind": "text", "source": source, "title": args.title, "draw": args.draw, "sent_by": "agent"},
                    owner=sender)
         print(f"Sent to Blueprint: {args.title or 'snippet'}")
