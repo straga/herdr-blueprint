@@ -13,6 +13,11 @@ drawing ASCII art in chat.
 
 If `HERDR_ENV` is not `1`, skip this skill.
 
+Before your first send in a session, run `herdr-blueprint open` once. It opens
+your own viewer to the right of your pane, or focuses it if it is already open.
+Without your own viewer a send goes to the workspace inbox, and the person
+looking at your pane does not see it.
+
 ```bash
 # A diagram you write now: --draw makes Blueprint draw it
 herdr-blueprint send --draw --title "Order flow" <<'EOF2'
