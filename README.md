@@ -180,7 +180,7 @@ herdr-blueprint show docs/design.md               # a file
 printf 'graph LR\n  A --> B\n' | herdr-blueprint send --draw --title "Flow"
 herdr-blueprint refresh --draw                    # redraw what is shown
 herdr-blueprint status                            # open or closed
-herdr-blueprint close --if-showing docs/design.md # close your viewer if it shows that file
+herdr-blueprint close --if-showing docs/design.md # ask your viewer to close if it shows that file and the file is gone
 ```
 
 `--draw` makes Blueprint draw Mermaid. Without it, diagrams show as text, which

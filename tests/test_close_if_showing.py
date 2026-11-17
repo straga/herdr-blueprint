@@ -1,9 +1,12 @@
-"""An agent closes its own viewer, but only while that viewer shows the page the agent names.
+"""An agent asks its own viewer to close while it shows a page of the agent's; the viewer decides.
 
 A program that keeps a page in an agent's viewer (a list that can become empty) has to take the
-page off the screen when there is nothing left to show. It must not close the viewer while the
-person is looking at something else there: the viewer remembers which file it shows, and
-`close --if-showing <path>` closes the agent's own viewer only when it shows that file.
+page off the screen when there is nothing left to show, and must not close the viewer while the
+person is looking at something else there. What the viewer shows can change between any look from
+outside and any action from outside, so `close --if-showing <path>` only asks: the viewer takes the
+request from its inbox in turn with every send, and closes when it shows that file at that moment,
+the file is gone, and the person is not working in it. A send that came before the request is shown
+first; the request then finds another file on screen and does nothing.
 
 Viewers start the way `open` starts them: `herdr-blueprint` run in the viewer's pane, with the
 neighbour in `BLUEPRINT_SOURCE_PANE`; the screen is the real app, given what the command gives it.
@@ -16,26 +19,18 @@ import subprocess
 from herdr_blueprint import cli
 from herdr_blueprint.app import BlueprintApp
 from herdr_blueprint.config import Config
+from herdr_blueprint.sources import inbox
 
 REAL_APP = BlueprintApp
 
 
 class Recorder:
-    def __init__(self, returncode=0):
+    def __init__(self):
         self.calls = []
-        self.returncode = returncode
 
     def __call__(self, cmd, **kwargs):
         self.calls.append(cmd)
-        return subprocess.CompletedProcess(cmd, self.returncode, "", "")
-
-
-def closes(calls):
-    return [c[-1] for c in calls if c[1:4] == ["plugin", "pane", "close"]]
-
-
-def panes_alive(monkeypatch, alive=lambda pane_id: True):
-    monkeypatch.setattr("herdr_blueprint.sources.pane.pane_exists", lambda herdr, pane_id: alive(pane_id))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
 
 
 def as_head(monkeypatch, pane_id):
@@ -73,108 +68,163 @@ async def settle(pilot, done, seconds=2.0):
     return False
 
 
-def close_as(monkeypatch, pane_id, path, run):
-    as_head(monkeypatch, pane_id)
-    monkeypatch.setattr("herdr_blueprint.cli.subprocess.run", run)
-    try:
-        return cli.main(["close", "--if-showing", str(path)])
-    except SystemExit as refused:  # a command herdr-blueprint does not have
-        return f"refused: {refused.code}"
+def closed(app, herdr):
+    """The viewer closed: by its own exit, or by a pane close an agent's command ran for it."""
+    return app.return_code is not None or bool(pane_closes(herdr))
 
 
-def run_viewer(monkeypatch, tmp_path, steps):
-    """A viewer beside `w1:pA` in `w1:pVA`; `steps(pilot, app)` drives it. -> what steps returned."""
-    panes_alive(monkeypatch)
+def pane_closes(herdr):
+    return [c for c in herdr.calls if c[1:4] == ["plugin", "pane", "close"]]
+
+
+def run_viewer(monkeypatch, steps):
+    """A viewer beside `w1:pA` in `w1:pVA`; `steps(pilot, app, herdr)` drives it -> what it returned.
+    `herdr` records every herdr command the agent's commands ran."""
+    monkeypatch.setattr("herdr_blueprint.sources.pane.pane_exists", lambda herdr, pane_id: True)
+    herdr = Recorder()
+    monkeypatch.setattr("herdr_blueprint.cli.subprocess.run", herdr)
     out = {}
 
     async def look(make_screen):
         app = make_screen()
         async with app.run_test(size=(80, 30)) as pilot:
             await pilot.pause(0.3)
-            out["result"] = await steps(pilot, app)
+            out["result"] = await steps(pilot, app, herdr)
 
     beside(monkeypatch, "w1:pA", "w1:pVA", lambda make: asyncio.run(look(make)))
     return out["result"]
 
 
-def test_the_viewer_showing_the_page_is_closed(monkeypatch, tmp_path):
-    page = tmp_path / "QUESTIONS.md"
-    page.write_text("# Questions", encoding="utf-8")
-
-    async def steps(pilot, app):
-        as_head(monkeypatch, "w1:pA")
-        assert cli.main(["show", str(page)]) == 0
-        assert await settle(pilot, lambda: app.current is not None and app.current.title == "QUESTIONS.md")
-        run = Recorder()
-        return close_as(monkeypatch, "w1:pA", page, run), closes(run.calls)
-
-    assert run_viewer(monkeypatch, tmp_path, steps) == (0, ["w1:pVA"])
+def ask_close(monkeypatch, pane_id, path):
+    as_head(monkeypatch, pane_id)
+    try:
+        return cli.main(["close", "--if-showing", str(path)])
+    except SystemExit as refused:  # a command herdr-blueprint does not have
+        return f"refused: {refused.code}"
 
 
-def test_a_viewer_showing_another_page_is_not_closed(monkeypatch, tmp_path):
+async def show(monkeypatch, pilot, app, path):
+    as_head(monkeypatch, "w1:pA")
+    assert cli.main(["show", str(path)]) == 0
+    assert await settle(pilot, lambda: app.current is not None and app.current.title == path.name)
+
+
+def page_and_report(tmp_path):
     page, other = tmp_path / "QUESTIONS.md", tmp_path / "report.md"
     page.write_text("# Questions", encoding="utf-8")
     other.write_text("# Report", encoding="utf-8")
+    return page.resolve(), other.resolve()
 
-    async def steps(pilot, app):
+
+# --- the race: the screen changes between a look from outside and the close ----------
+
+def test_a_file_sent_just_before_the_request_is_not_closed(monkeypatch, tmp_path):
+    """The agent's page is on screen and gone; another file is sent and, before the viewer has
+    drawn it, the close is asked. The viewer must end on the other file, open."""
+    page, other = page_and_report(tmp_path)
+
+    async def steps(pilot, app, herdr):
+        await show(monkeypatch, pilot, app, page)
+        page.unlink()
         as_head(monkeypatch, "w1:pA")
-        assert cli.main(["show", str(page)]) == 0
-        assert await settle(pilot, lambda: app.current is not None and app.current.title == "QUESTIONS.md")
         assert cli.main(["show", str(other)]) == 0
-        assert await settle(pilot, lambda: app.current.title == "report.md")
-        run = Recorder()
-        return close_as(monkeypatch, "w1:pA", page, run), closes(run.calls)
+        ask_close(monkeypatch, "w1:pA", page)
+        await settle(pilot, lambda: closed(app, herdr) or app.current.title == "report.md")
+        await pilot.pause(0.5)
+        return closed(app, herdr), app.current.title
 
-    code, closed = run_viewer(monkeypatch, tmp_path, steps)
-    assert closed == []
-    assert code == 1
+    assert run_viewer(monkeypatch, steps) == (False, "report.md")
 
 
-def test_a_viewer_showing_sent_text_is_not_closed(monkeypatch, tmp_path):
-    page = tmp_path / "QUESTIONS.md"
-    page.write_text("# Questions", encoding="utf-8")
+def test_text_sent_just_before_the_request_is_not_closed(monkeypatch, tmp_path):
+    page, _other = page_and_report(tmp_path)
 
-    async def steps(pilot, app):
+    async def steps(pilot, app, herdr):
+        await show(monkeypatch, pilot, app, page)
+        page.unlink()
         as_head(monkeypatch, "w1:pA")
-        assert cli.main(["show", str(page)]) == 0
-        assert await settle(pilot, lambda: app.current is not None and app.current.title == "QUESTIONS.md")
         monkeypatch.setattr("sys.stdin", io.StringIO("# Note"))
         assert cli.main(["send", "--title", "note"]) == 0
-        assert await settle(pilot, lambda: app.current.title == "note")
-        run = Recorder()
-        return close_as(monkeypatch, "w1:pA", page, run), closes(run.calls)
+        ask_close(monkeypatch, "w1:pA", page)
+        await settle(pilot, lambda: closed(app, herdr) or app.current.title == "note")
+        await pilot.pause(0.5)
+        return closed(app, herdr), app.current.title
 
-    assert run_viewer(monkeypatch, tmp_path, steps) == (1, [])
-
-
-def test_another_heads_viewer_is_not_closed(monkeypatch, tmp_path):
-    page = tmp_path / "QUESTIONS.md"
-    page.write_text("# Questions", encoding="utf-8")
-
-    async def steps(pilot, app):
-        as_head(monkeypatch, "w1:pA")
-        assert cli.main(["show", str(page)]) == 0
-        assert await settle(pilot, lambda: app.current is not None and app.current.title == "QUESTIONS.md")
-        run = Recorder()
-        return close_as(monkeypatch, "w1:pB", page, run), closes(run.calls)
-
-    assert run_viewer(monkeypatch, tmp_path, steps) == (1, [])
+    assert run_viewer(monkeypatch, steps) == (False, "note")
 
 
-def test_outside_herdr_nothing_is_closed(monkeypatch, tmp_path):
-    run = Recorder()
-    assert close_as(monkeypatch, None, tmp_path / "QUESTIONS.md", run) == 1
-    assert run.calls == []
+# --- the viewer's own decision -----------------------------------------------------
+
+def test_the_viewer_on_the_gone_page_closes(monkeypatch, tmp_path):
+    page, _other = page_and_report(tmp_path)
+
+    async def steps(pilot, app, herdr):
+        await show(monkeypatch, pilot, app, page)
+        page.unlink()
+        code = ask_close(monkeypatch, "w1:pA", page)
+        return code, await settle(pilot, lambda: closed(app, herdr))
+
+    assert run_viewer(monkeypatch, steps) == (0, True)
 
 
-def test_a_close_herdr_refuses_leaves_the_viewer_recorded(monkeypatch, tmp_path):
-    from herdr_blueprint.sources import inbox
+def test_a_page_that_is_back_is_redrawn_not_closed(monkeypatch, tmp_path):
+    """A question came back before the request was taken: the page is redrawn as it is now."""
+    page, _other = page_and_report(tmp_path)
 
-    page = (tmp_path / "QUESTIONS.md").resolve()
-    panes_alive(monkeypatch)
-    inbox.mark_viewer("w1:pVA", owner="w1:pA")
-    inbox.mark_shown("w1:pVA", page, owner="w1:pA")
-    run = Recorder(returncode=1)
-    assert close_as(monkeypatch, "w1:pA", page, run) == 1
-    assert closes(run.calls) == ["w1:pVA"]
-    assert inbox.viewer_panes(owner="w1:pA") == ["w1:pVA"]
+    async def steps(pilot, app, herdr):
+        await show(monkeypatch, pilot, app, page)
+        page.write_text("# Questions\n\nA new one", encoding="utf-8")
+        ask_close(monkeypatch, "w1:pA", page)
+        redrawn = await settle(pilot, lambda: "A new one" in app._shown_text)
+        await pilot.pause(0.3)
+        return closed(app, herdr), redrawn
+
+    assert run_viewer(monkeypatch, steps) == (False, True)
+
+
+def test_a_viewer_on_another_file_is_not_closed(monkeypatch, tmp_path):
+    page, other = page_and_report(tmp_path)
+
+    async def steps(pilot, app, herdr):
+        await show(monkeypatch, pilot, app, other)
+        page.unlink()
+        ask_close(monkeypatch, "w1:pA", page)
+        await pilot.pause(0.5)
+        return closed(app, herdr), app.current.title
+
+    assert run_viewer(monkeypatch, steps) == (False, "report.md")
+
+
+def test_another_heads_request_does_not_reach_this_viewer(monkeypatch, tmp_path):
+    page, _other = page_and_report(tmp_path)
+
+    async def steps(pilot, app, herdr):
+        await show(monkeypatch, pilot, app, page)
+        page.unlink()
+        code = ask_close(monkeypatch, "w1:pB", page)
+        await pilot.pause(0.5)
+        return code, closed(app, herdr)
+
+    assert run_viewer(monkeypatch, steps) == (1, False)
+
+
+def test_its_own_page_shown_once_gone_closes_the_viewer(monkeypatch, tmp_path):
+    """The page was there when the agent sent it and gone when the viewer came to read it."""
+    page, _other = page_and_report(tmp_path)
+
+    async def steps(pilot, app, herdr):
+        await show(monkeypatch, pilot, app, page)
+        page.unlink()
+        inbox.send({"kind": "file", "path": str(page), "draw": False, "sent_by": "agent"}, owner="w1:pA")
+        return await settle(pilot, lambda: closed(app, herdr))
+
+    assert run_viewer(monkeypatch, steps) is True
+
+
+def test_outside_herdr_nothing_is_asked(monkeypatch, tmp_path):
+    assert ask_close(monkeypatch, None, tmp_path / "QUESTIONS.md") == 1
+
+
+def test_without_a_viewer_of_ones_own_nothing_is_asked(monkeypatch, tmp_path):
+    monkeypatch.setattr("herdr_blueprint.sources.pane.pane_exists", lambda herdr, pane_id: True)
+    assert ask_close(monkeypatch, "w1:pA", tmp_path / "QUESTIONS.md") == 1

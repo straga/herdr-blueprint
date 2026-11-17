@@ -147,7 +147,7 @@ def test_the_viewer_knows_its_neighbor_and_records_itself(monkeypatch):
     seen = {}
 
     class FakeApp:
-        def __init__(self, source=None, **kwargs):
+        def __init__(self, source=None):
             seen["source"] = source
 
         def run(self):
@@ -218,7 +218,7 @@ def test_the_viewer_keeps_the_pane_id_when_herdr_did_not_answer(monkeypatch):
     seen = {}
 
     class FakeApp:
-        def __init__(self, source=None, **kwargs):
+        def __init__(self, source=None):
             seen["source"] = source
 
         def run(self):

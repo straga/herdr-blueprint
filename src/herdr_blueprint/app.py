@@ -31,8 +31,8 @@ from . import edit, point
 from .diagram import MAX_DIAGRAM_CHARS
 from .document import DiagramFence, DiagramView, DocumentView, PlainView, as_code
 from .item import MAX_BYTES, Item, clean, is_large
-from .sources import inbox, pane
-from .sources.inbox import Refresh, watch_inbox
+from .sources import pane
+from .sources.inbox import CloseIfShowing, Refresh, watch_inbox
 from .start import FilePicker, StartView
 from .themes import PALETTES, get_palette, palette_for_theme
 
@@ -333,11 +333,8 @@ class BlueprintApp(App[None]):
         focus_pane: Callable[[str], None] | None = None,
         pane_alive: Callable[[str], bool] | None = None,
         ask_on_open: bool = True,
-        viewer_id: str | None = None,
     ) -> None:
         super().__init__(driver_class=in_cells(self.get_driver_class()))
-        # This viewer's own pane, set when it runs in herdr: what it shows is recorded under it.
-        self._viewer_id = viewer_id
         self.settings = settings or config_store.load()
         # The pane Blueprint was opened next to; None outside herdr.
         self.source = source
@@ -436,6 +433,12 @@ class BlueprintApp(App[None]):
             async for message in watch_inbox(owner=self._inbox_owner):
                 if isinstance(message, Refresh):
                     await self.refresh_current(draw=message.draw)
+                elif isinstance(message, CloseIfShowing):
+                    await self.close_if_showing(Path(message.path))
+                elif message.kind == "file" and message.path is not None and not message.path.exists() \
+                        and self._shows(message.path):
+                    # Sent while it was there, gone when read: the page it replaces is gone too.
+                    await self.close_if_showing(message.path)
                 else:
                     await self.open_item(message)
         except Exception as exc:
@@ -470,6 +473,26 @@ class BlueprintApp(App[None]):
         if self._held is not None and self._live is None and not self._noting and not self._opening:
             item, self._held = self._held, None
             self.run_worker(self.open_item(item), group="open", exit_on_error=False)
+
+    def _shows(self, path: Path) -> bool:
+        """Is the file `path` what is on screen now."""
+        current = self.current
+        return (current is not None and current.kind == "file" and current.path is not None
+                and current.path.resolve() == path.resolve())
+
+    async def close_if_showing(self, path: Path) -> None:
+        """Close while `path` is on screen, gone from disk and the person is not working in the
+        viewer; a `path` that is back is redrawn instead. Decided under the render lock, so no send
+        changes the screen between the look and the close."""
+        async with self._render_lock:
+            if self._live is not None or self._noting or self._opening or self._held is not None or self.pointing:
+                return
+            if not self._shows(path):
+                return
+            if path.exists():
+                await self._open_locked(replace(self.current, at=time.time()))
+                return
+            self.exit()
 
     async def refresh_current(self, draw: bool) -> None:
         """Re-read and redraw what is on screen, with the worker's draw flag."""
@@ -511,9 +534,6 @@ class BlueprintApp(App[None]):
         self.preview_text = None
         self.current = item
         self.title_text = clean(item.title)
-        if self._viewer_id:
-            shown = item.path.resolve() if item.kind == "file" and item.path is not None else None
-            inbox.mark_shown(self._viewer_id, shown, owner=self._inbox_owner)
         previous_key = self._shown_key
         self._shown_key = doc_key(item)
         dropped = []
