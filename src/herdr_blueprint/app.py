@@ -31,7 +31,7 @@ from . import edit, point
 from .diagram import MAX_DIAGRAM_CHARS
 from .document import DiagramFence, DiagramView, DocumentView, PlainView, as_code
 from .item import MAX_BYTES, Item, clean, is_large
-from .sources import pane
+from .sources import inbox, pane
 from .sources.inbox import Refresh, watch_inbox
 from .start import FilePicker, StartView
 from .themes import PALETTES, get_palette, palette_for_theme
@@ -333,8 +333,11 @@ class BlueprintApp(App[None]):
         focus_pane: Callable[[str], None] | None = None,
         pane_alive: Callable[[str], bool] | None = None,
         ask_on_open: bool = True,
+        viewer_id: str | None = None,
     ) -> None:
         super().__init__(driver_class=in_cells(self.get_driver_class()))
+        # This viewer's own pane, set when it runs in herdr: what it shows is recorded under it.
+        self._viewer_id = viewer_id
         self.settings = settings or config_store.load()
         # The pane Blueprint was opened next to; None outside herdr.
         self.source = source
@@ -508,6 +511,9 @@ class BlueprintApp(App[None]):
         self.preview_text = None
         self.current = item
         self.title_text = clean(item.title)
+        if self._viewer_id:
+            shown = item.path.resolve() if item.kind == "file" and item.path is not None else None
+            inbox.mark_shown(self._viewer_id, shown, owner=self._inbox_owner)
         previous_key = self._shown_key
         self._shown_key = doc_key(item)
         dropped = []

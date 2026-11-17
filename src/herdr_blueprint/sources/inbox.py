@@ -101,6 +101,37 @@ def viewer_panes(workspace: str | None = None, owner: str | None = None) -> list
 
 def clear_viewer(pane_id: str, workspace: str | None = None, owner: str | None = None) -> None:
     _viewer_record(pane_id, workspace, owner).unlink(missing_ok=True)
+    _shown_record(pane_id, workspace, owner).unlink(missing_ok=True)
+
+
+# Beside each viewer record, the file that viewer shows, so an agent can close its viewer only
+# while it shows a page of the agent's (`close --if-showing`). Its own folder: `viewers/` holds
+# one pane id per file and is read as such.
+SHOWN_DIR = "shown"
+
+
+def _shown_record(pane_id: str, workspace: str | None, owner: str | None = None) -> Path:
+    return inbox_dir(workspace, owner) / SHOWN_DIR / _safe(pane_id)
+
+
+def mark_shown(pane_id: str, path: Path | None, workspace: str | None = None, owner: str | None = None) -> None:
+    """Record that the viewer `pane_id` shows the file `path`; None — it shows no file."""
+    record = _shown_record(pane_id, workspace, owner)
+    if path is None:
+        record.unlink(missing_ok=True)
+        return
+    record.parent.mkdir(parents=True, exist_ok=True)
+    tmp = record.with_name(f".{record.name}.{os.getpid()}.tmp")
+    tmp.write_text(str(path), encoding="utf-8")
+    os.replace(tmp, record)
+
+
+def shown_path(pane_id: str, workspace: str | None = None, owner: str | None = None) -> str | None:
+    """The file the viewer `pane_id` recorded as shown, or None."""
+    try:
+        return _shown_record(pane_id, workspace, owner).read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
 
 
 def _sent_at(data: dict, now: float) -> float:

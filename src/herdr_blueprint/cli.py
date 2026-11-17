@@ -140,6 +140,38 @@ def own_inbox(herdr: str, own_pane: str | None, exists=None) -> str | None:
     return None
 
 
+def close_if_showing(herdr: str, own_pane: str | None, path: Path, run=None) -> int:
+    """Close the viewer of `own_pane` while it shows `path`. -> 0 closed, 1 nothing closed.
+
+    Under the pane's open lock, so a send opening the viewer is not raced. Outside a pane there is
+    no own viewer to close.
+    """
+    if not own_pane:
+        print("not closed: not in a herdr pane")
+        return 1
+    run = run or subprocess.run
+    with _pane_lock(own_pane):
+        for viewer in inbox.viewer_panes(owner=own_pane):
+            if not pane.pane_exists(herdr, viewer):
+                inbox.clear_viewer(viewer, owner=own_pane)  # its pane was closed without cleanup
+                continue
+            if inbox.shown_path(viewer, owner=own_pane) != str(path):
+                continue
+            try:
+                done = run([herdr, "plugin", "pane", "close", viewer], capture_output=True, text=True)
+            except OSError as exc:
+                print(f"herdr-blueprint: could not close the viewer: {exc}", file=sys.stderr)
+                return 1
+            if done.returncode != 0:
+                print(f"herdr-blueprint: could not close the viewer: {(done.stderr or '').strip()}", file=sys.stderr)
+                return 1
+            inbox.clear_viewer(viewer, owner=own_pane)
+            print(f"closed: {path.name}")
+            return 0
+    print(f"not closed: no viewer of yours shows {path.name}")
+    return 1
+
+
 def read_stdin() -> str:
     """stdin as UTF-8 whatever the console code page is."""
     raw = getattr(sys.stdin, "buffer", None)
@@ -167,6 +199,9 @@ def _parser() -> argparse.ArgumentParser:
     refresh.add_argument("--draw", action="store_true", help=DRAW_HELP)
     commands.add_parser("open", help="open the viewer pane in herdr")
     commands.add_parser("status", help="print open or closed: whether a viewer is open (exit 0 when open)")
+    close = commands.add_parser("close", help="close your own viewer, only while it shows the named file")
+    close.add_argument("--if-showing", type=Path, required=True, metavar="PATH",
+                       help="the file the viewer must be showing to be closed")
     commands.add_parser("edit-session")  # no help: left out of the command list
     install_skill = commands.add_parser("install-skill", help="add the Blueprint skill to Claude Code and Codex")
     install_skill.add_argument("--copy", action="store_true", help=argparse.SUPPRESS)  # the plugin build: never fails it
@@ -223,6 +258,10 @@ def main(argv: list[str] | None = None) -> int:
         print("open" if viewing else "closed")
         return 0 if viewing else 1
 
+    if args.command == "close":
+        return close_if_showing(os.environ.get("HERDR_BIN_PATH", "herdr"), os.environ.get("HERDR_PANE_ID"),
+                                args.if_showing.expanduser().resolve())
+
     if args.command in ("install-skill", "uninstall-skill"):
         from . import skills_install
 
@@ -264,7 +303,7 @@ def main(argv: list[str] | None = None) -> int:
         # If herdr did not answer yet, keep the pane id: the viewer looks again later.
         source = pane.source_of(herdr, source_pane) or (pane.Source(source_pane) if source_pane else None)
         quiet = {"ask_on_open": False} if os.environ.get(ASK_ENV) == "0" else {}
-        BlueprintApp(source=source, **quiet).run()
+        BlueprintApp(source=source, viewer_id=viewer_id, **quiet).run()
     finally:
         if viewer_id:
             inbox.clear_viewer(viewer_id, owner=source_pane)
