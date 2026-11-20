@@ -41,3 +41,17 @@ id = "install-skill"
 title = "Add the Blueprint skill to Claude Code / Codex"
 contexts = ["workspace"]
 command = ["uv", "run", "--no-sync", "python", "-m", "herdr_blueprint", "install-skill"]
+
+# A Ctrl-click on a path to a Markdown file (herdr turns it into a file:// link) shows it
+# in the viewer next to the clicked pane, the same way `show` does from the command line.
+[[actions]]
+id = "show-clicked"
+title = "Show Clicked Markdown"
+contexts = ["workspace"]
+command = ["uv", "run", "--no-sync", "python", "-m", "herdr_blueprint", "show-clicked"]
+
+[[link_handlers]]
+id = "markdown-file"
+title = "Markdown file"
+pattern = "^file://.*\\.(md|markdown)$"
+action = "show-clicked"

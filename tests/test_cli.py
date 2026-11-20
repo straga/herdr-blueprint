@@ -47,6 +47,29 @@ def test_show_rejects_missing_and_unsupported_files(tmp_path):
     assert messages() == []
 
 
+# --- show-clicked (the herdr link handler action) ------------------------------------------
+
+def test_show_clicked_shows_the_clicked_file(tmp_path, monkeypatch, capsys):
+    doc = tmp_path / "plan.md"
+    doc.write_text("# Plan", encoding="utf-8")
+    monkeypatch.setenv("HERDR_PLUGIN_CLICKED_URL", f"file://{doc}")
+    assert cli.main(["show-clicked"]) == 0
+    assert messages()[0]["path"] == str(doc.resolve())
+    assert "plan.md" in capsys.readouterr().out
+
+
+def test_show_clicked_missing_file_reports_instead_of_crashing(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERDR_PLUGIN_CLICKED_URL", f"file://{tmp_path}/gone.md")
+    assert cli.main(["show-clicked"]) == 1
+    assert "not found" in capsys.readouterr().err
+    assert messages() == []
+
+
+def test_show_clicked_requires_a_file_url(monkeypatch):
+    monkeypatch.setenv("HERDR_PLUGIN_CLICKED_URL", "https://example.com/x.md")
+    assert cli.main(["show-clicked"]) == 2
+
+
 # --- send -------------------------------------------------------------------------
 
 def test_send_reads_stdin_as_utf8(monkeypatch):

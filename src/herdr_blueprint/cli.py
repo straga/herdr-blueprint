@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import unquote
 
 try:
     import fcntl
@@ -164,6 +165,20 @@ def read_stdin() -> str:
     return raw.read().decode("utf-8-sig", errors="replace")
 
 
+def _show_file(path: Path, draw: bool, sender: str | None) -> int:
+    """The body of `show` and `show-clicked`: check the file and send it to the pane's viewer."""
+    if not path.is_file():
+        print(f"herdr-blueprint: file not found: {path}", file=sys.stderr)
+        return 1
+    if path.suffix.lower() not in VIEWABLE_SUFFIXES:
+        print("herdr-blueprint: only .md, .markdown, .mmd and .mermaid files", file=sys.stderr)
+        return 2
+    sender = sender_opening_own_viewer(os.environ.get("HERDR_BIN_PATH", "herdr"), os.environ.get("HERDR_PANE_ID"), sender)
+    inbox.send({"kind": "file", "path": str(path), "draw": draw, "sent_by": "agent"}, owner=sender)
+    print(f"Sent to Blueprint: {path.name}")
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="herdr-blueprint",
@@ -176,6 +191,7 @@ def _parser() -> argparse.ArgumentParser:
     show = commands.add_parser("show", help="show a Markdown or Mermaid file in the viewer")
     show.add_argument("path", type=Path)
     show.add_argument("--draw", action="store_true", help=DRAW_HELP)
+    commands.add_parser("show-clicked")  # no help: herdr's link handler runs it, not people
     send = commands.add_parser("send", help="send Markdown or Mermaid from stdin to the viewer")
     send.add_argument("--title", default=None, help="label in the header")
     send.add_argument("--draw", action="store_true", help=DRAW_HELP)
@@ -208,17 +224,14 @@ def main(argv: list[str] | None = None) -> int:
         sender = own_inbox(os.environ.get("HERDR_BIN_PATH", "herdr"), os.environ.get("HERDR_PANE_ID"))
 
     if args.command == "show":
-        path = args.path.expanduser().resolve()
-        if not path.is_file():
-            print(f"herdr-blueprint: file not found: {path}", file=sys.stderr)
-            return 1
-        if path.suffix.lower() not in VIEWABLE_SUFFIXES:
-            print("herdr-blueprint: only .md, .markdown, .mmd and .mermaid files", file=sys.stderr)
+        return _show_file(args.path.expanduser().resolve(), args.draw, sender)
+
+    if args.command == "show-clicked":
+        url = os.environ.get("HERDR_PLUGIN_CLICKED_URL", "")
+        if not url.startswith("file://"):
+            print(f"herdr-blueprint: not a file link: {url}", file=sys.stderr)
             return 2
-        sender = sender_opening_own_viewer(os.environ.get("HERDR_BIN_PATH", "herdr"), os.environ.get("HERDR_PANE_ID"), sender)
-        inbox.send({"kind": "file", "path": str(path), "draw": args.draw, "sent_by": "agent"}, owner=sender)
-        print(f"Sent to Blueprint: {path.name}")
-        return 0
+        return _show_file(Path(unquote(url[len("file://"):])).resolve(), False, None)
 
     if args.command == "send":
         source = read_stdin().strip()
