@@ -193,18 +193,25 @@ def _show_file(path: Path, draw: bool, sender: str | None) -> int:
     return 0
 
 
-# An absolute path token: POSIX `/...` or Windows `C:\...`, not preceded by a word char or `~`,
-# so relative `dir/x.md` and home-relative `~/x.md` are not read as the paths herdr would link.
-_PATH_TOKEN = re.compile(r"""(?<![\w~])((?:[A-Za-z]:)?[\\/][^\s'"`<>|]*)""")
+# The two shapes herdr's url_from_link_target knows: a `scheme://` URL and an absolute path.
+# Matching a URL whole keeps `//host/x.md` inside `https://host/x.md` from being read as a path.
+_URL_OR_PATH = re.compile(r"""(?P<url>[A-Za-z][A-Za-z0-9+.-]*://[^\s'"`<>|]*)|(?P<path>[\\/][^\s'"`<>|]*)""")
 
 
 def last_doc_path(text: str) -> Path | None:
-    """The last `.md`/`.markdown` path mentioned in `text` — the document set herdr links to."""
+    """The last document herdr would open from `text`: a `file://` URL to .md/.markdown, or a plain
+    absolute path to .md — the exact suffixes of url_from_link_target, no case folding."""
     found = None
-    for match in _PATH_TOKEN.finditer(text):
-        token = match.group(1).rstrip(".,;:!?)]}")
-        if Path(token).suffix.lower() in DOCUMENT_SUFFIXES:
-            found = Path(token)
+    for match in _URL_OR_PATH.finditer(text):
+        url, path = match.group("url"), match.group("path")
+        if url is not None:
+            scheme, _, rest = url.partition("://")
+            if scheme == "file" and Path(unquote(rest)).suffix in DOCUMENT_SUFFIXES:
+                found = Path(unquote(rest))
+        else:
+            token = path.rstrip(".,;:!?)]}")
+            if token.endswith(".md"):
+                found = Path(token)
     return found
 
 

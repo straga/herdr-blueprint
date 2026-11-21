@@ -93,15 +93,15 @@ def test_show_last_sends_the_last_markdown_path(tmp_path, monkeypatch, capsys):
     code.write_text("", encoding="utf-8")
     diagram = tmp_path / "flow.mmd"
     diagram.write_text("graph LR\n  A --> B", encoding="utf-8")
-    doc = tmp_path / "new.markdown"
+    doc = tmp_path / "new.md"
     doc.write_text("# New", encoding="utf-8")
-    # The document set is .md and .markdown, the one herdr's link handler matches:
-    # a .mmd printed after the doc must not win.
+    # A plain path is a document only with .md, the exact suffix herdr's markdown_file_url checks:
+    # .mmd and .py printed after the doc must not win.
     monkeypatch.setattr("herdr_blueprint.cli.subprocess.run",
                         fake_herdr(f"Writing {old}\nsee {code} and {diagram}\nFinal: {doc}\n"))
     assert cli.main(["show-last"]) == 0
     assert messages()[0]["path"] == str(doc.resolve())
-    assert "new.markdown" in capsys.readouterr().out
+    assert "new.md" in capsys.readouterr().out
 
 
 def test_show_last_reports_no_document_instead_of_crashing(tmp_path, monkeypatch, capsys):
@@ -120,6 +120,57 @@ def test_show_last_survives_a_pane_herdr_cannot_name(monkeypatch, capsys):
     monkeypatch.setattr("herdr_blueprint.cli.subprocess.run", run)
     assert cli.main(["show-last"]) == 1
     assert "pane" in capsys.readouterr().err
+    assert messages() == []
+
+
+def test_show_last_prefers_a_path_over_a_following_https_url(tmp_path, monkeypatch, capsys):
+    # The review's Major: `//host/manual.md` inside `https://host/manual.md` used to be read as a
+    # path and win over the real one; herdr sends an http(s) URL to the browser, never to the viewer.
+    doc = tmp_path / "plan.md"
+    doc.write_text("# Plan", encoding="utf-8")
+    monkeypatch.setattr("herdr_blueprint.cli.subprocess.run",
+                        fake_herdr(f"Plan: {doc}\nReference: https://example.com/manual.md\n"))
+    assert cli.main(["show-last"]) == 0
+    assert messages()[0]["path"] == str(doc.resolve())
+
+
+def test_show_last_shows_a_file_url_target(tmp_path, monkeypatch, capsys):
+    # herdr's openable_link_uri accepts file:// to .md/.markdown and show-clicked opens it:
+    # the keyboard action decodes the same URL instead of reading `//tmp/x.md` as a path.
+    doc = tmp_path / "x.md"
+    doc.write_text("# X", encoding="utf-8")
+    monkeypatch.setattr("herdr_blueprint.cli.subprocess.run", fake_herdr(f"see file://{doc}\n"))
+    assert cli.main(["show-last"]) == 0
+    assert messages()[0]["path"] == str(doc.resolve())
+
+
+def test_show_last_shows_a_file_url_to_markdown(tmp_path, monkeypatch, capsys):
+    # .markdown is a document only behind file://, the exact set openable_link_uri checks.
+    doc = tmp_path / "x.markdown"
+    doc.write_text("# X", encoding="utf-8")
+    monkeypatch.setattr("herdr_blueprint.cli.subprocess.run", fake_herdr(f"see file://{doc}\n"))
+    assert cli.main(["show-last"]) == 0
+    assert messages()[0]["path"] == str(doc.resolve())
+
+
+def test_show_last_ignores_a_plain_markdown_path(tmp_path, monkeypatch, capsys):
+    # The paired negative: the same path without file:// is not a document — herdr's plain-text
+    # branch (markdown_file_url) requires .md, so the keyboard action must not open it either.
+    doc = tmp_path / "x.markdown"
+    doc.write_text("# X", encoding="utf-8")
+    monkeypatch.setattr("herdr_blueprint.cli.subprocess.run", fake_herdr(f"see {doc}\n"))
+    assert cli.main(["show-last"]) == 1
+    assert "no .md path" in capsys.readouterr().err
+    assert messages() == []
+
+
+def test_show_last_ignores_an_uppercase_md_suffix(tmp_path, monkeypatch, capsys):
+    # The review's Minor: herdr compares the suffix exactly; .MD is not a document.
+    doc = tmp_path / "X.MD"
+    doc.write_text("# X", encoding="utf-8")
+    monkeypatch.setattr("herdr_blueprint.cli.subprocess.run", fake_herdr(f"see {doc}\n"))
+    assert cli.main(["show-last"]) == 1
+    assert "no .md path" in capsys.readouterr().err
     assert messages() == []
 
 
