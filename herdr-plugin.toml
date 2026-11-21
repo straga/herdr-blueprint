@@ -50,6 +50,13 @@ title = "Show Clicked Markdown"
 contexts = ["workspace"]
 command = ["uv", "run", "--no-sync", "python", "-m", "herdr_blueprint", "show-clicked"]
 
+# The keyboard entry: shows the last .md path printed in the pane the key was pressed in.
+[[actions]]
+id = "show-last"
+title = "Show Last Markdown"
+contexts = ["workspace"]
+command = ["uv", "run", "--no-sync", "python", "-m", "herdr_blueprint", "show-last"]
+
 [[link_handlers]]
 id = "markdown-file"
 title = "Markdown file"

@@ -70,6 +70,59 @@ def test_show_clicked_requires_a_file_url(monkeypatch):
     assert cli.main(["show-clicked"]) == 2
 
 
+# --- show-last (the keyboard entry: the last .md path printed in the pane) -------------------
+
+def fake_herdr(output: str, pane_id: str = "w1:p1"):
+    """Stands in for subprocess.run answering `pane current` and `pane read` for one pane."""
+    def run(cmd, **kwargs):
+        if cmd[1:3] == ["pane", "current"]:
+            out = json.dumps({"result": {"pane": {"pane_id": pane_id}}})
+        elif cmd[1:3] == ["pane", "read"]:
+            assert cmd[3] == pane_id and cmd[4:6] == ["--source", "recent-unwrapped"], cmd
+            out = output
+        else:
+            out = ""
+        return subprocess.CompletedProcess(cmd, 0, out, "")
+    return run
+
+
+def test_show_last_sends_the_last_markdown_path(tmp_path, monkeypatch, capsys):
+    old = tmp_path / "old.md"
+    old.write_text("# Old", encoding="utf-8")
+    code = tmp_path / "main.py"
+    code.write_text("", encoding="utf-8")
+    diagram = tmp_path / "flow.mmd"
+    diagram.write_text("graph LR\n  A --> B", encoding="utf-8")
+    doc = tmp_path / "new.markdown"
+    doc.write_text("# New", encoding="utf-8")
+    # The document set is .md and .markdown, the one herdr's link handler matches:
+    # a .mmd printed after the doc must not win.
+    monkeypatch.setattr("herdr_blueprint.cli.subprocess.run",
+                        fake_herdr(f"Writing {old}\nsee {code} and {diagram}\nFinal: {doc}\n"))
+    assert cli.main(["show-last"]) == 0
+    assert messages()[0]["path"] == str(doc.resolve())
+    assert "new.markdown" in capsys.readouterr().out
+
+
+def test_show_last_reports_no_document_instead_of_crashing(tmp_path, monkeypatch, capsys):
+    code = tmp_path / "main.py"
+    code.write_text("", encoding="utf-8")
+    monkeypatch.setattr("herdr_blueprint.cli.subprocess.run", fake_herdr(f"ran {code}\n"))
+    assert cli.main(["show-last"]) == 1
+    assert "no .md path" in capsys.readouterr().err
+    assert messages() == []
+
+
+def test_show_last_survives_a_pane_herdr_cannot_name(monkeypatch, capsys):
+    def run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, "", "")  # `pane current` fails
+
+    monkeypatch.setattr("herdr_blueprint.cli.subprocess.run", run)
+    assert cli.main(["show-last"]) == 1
+    assert "pane" in capsys.readouterr().err
+    assert messages() == []
+
+
 # --- send -------------------------------------------------------------------------
 
 def test_send_reads_stdin_as_utf8(monkeypatch):

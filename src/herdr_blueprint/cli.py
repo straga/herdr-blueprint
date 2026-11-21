@@ -6,6 +6,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -16,7 +17,7 @@ try:
 except ImportError:  # Windows: no lock, the race stays as before
     fcntl = None
 
-from .item import VIEWABLE_SUFFIXES
+from .item import DOCUMENT_SUFFIXES, VIEWABLE_SUFFIXES
 from .sources import inbox, pane
 
 PLUGIN_ID = pane.PLUGIN_ID
@@ -39,6 +40,19 @@ def focused_pane_id(herdr: str, pane_id: str | None, run=subprocess.run) -> str 
         return json.loads(result.stdout)["result"]["pane"]["pane_id"]
     except (ValueError, KeyError, TypeError):
         return None
+
+
+def pane_read(herdr: str, pane_id: str, run=subprocess.run) -> str | None:
+    """The recent unwrapped output of `pane_id`, or None when herdr cannot read it."""
+    try:
+        # herdr prints UTF-8; Windows would otherwise decode with the ANSI code page.
+        result = run(
+            [herdr, "pane", "read", pane_id, "--source", "recent-unwrapped"],
+            capture_output=True, encoding="utf-8", errors="replace",
+        )
+    except OSError:
+        return None
+    return result.stdout if result.returncode == 0 else None
 
 
 # Set on the viewer by `open`: the pane it was opened next to.
@@ -179,6 +193,39 @@ def _show_file(path: Path, draw: bool, sender: str | None) -> int:
     return 0
 
 
+# An absolute path token: POSIX `/...` or Windows `C:\...`, not preceded by a word char or `~`,
+# so relative `dir/x.md` and home-relative `~/x.md` are not read as the paths herdr would link.
+_PATH_TOKEN = re.compile(r"""(?<![\w~])((?:[A-Za-z]:)?[\\/][^\s'"`<>|]*)""")
+
+
+def last_doc_path(text: str) -> Path | None:
+    """The last `.md`/`.markdown` path mentioned in `text` — the document set herdr links to."""
+    found = None
+    for match in _PATH_TOKEN.finditer(text):
+        token = match.group(1).rstrip(".,;:!?)]}")
+        if Path(token).suffix.lower() in DOCUMENT_SUFFIXES:
+            found = Path(token)
+    return found
+
+
+def show_last(herdr: str, pane_id: str | None, sender: str | None, run=None) -> int:
+    """`show-last`: the last .md path printed in the focused pane, shown the way `show` shows a file."""
+    run = run or subprocess.run  # looked up at call time, like own_inbox does with `exists`
+    pane_id = focused_pane_id(herdr, pane_id, run=run)
+    if not pane_id:
+        print("herdr-blueprint: no pane to read: not in a herdr pane and herdr did not answer", file=sys.stderr)
+        return 1
+    output = pane_read(herdr, pane_id, run=run)
+    if output is None:
+        print(f"herdr-blueprint: could not read the output of pane {pane_id}", file=sys.stderr)
+        return 1
+    path = last_doc_path(output)
+    if path is None:
+        print(f"herdr-blueprint: no .md path in the output of pane {pane_id}", file=sys.stderr)
+        return 1
+    return _show_file(path.resolve(), False, sender)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="herdr-blueprint",
@@ -186,12 +233,14 @@ def _parser() -> argparse.ArgumentParser:
     )
     # The metavar lists the commands people use; edit-session runs inside Blueprint's editor pane.
     commands = parser.add_subparsers(
-        dest="command", metavar="{show,send,refresh,open,status,install-skill,uninstall-skill}",
+        dest="command",
+        metavar="{show,show-last,send,refresh,open,status,install-skill,uninstall-skill}",
     )
     show = commands.add_parser("show", help="show a Markdown or Mermaid file in the viewer")
     show.add_argument("path", type=Path)
     show.add_argument("--draw", action="store_true", help=DRAW_HELP)
     commands.add_parser("show-clicked")  # no help: herdr's link handler runs it, not people
+    commands.add_parser("show-last", help="show the last .md path printed in the focused pane")
     send = commands.add_parser("send", help="send Markdown or Mermaid from stdin to the viewer")
     send.add_argument("--title", default=None, help="label in the header")
     send.add_argument("--draw", action="store_true", help=DRAW_HELP)
@@ -220,11 +269,14 @@ def main(argv: list[str] | None = None) -> int:
 
     # An agent writes to and asks about the inbox of its own viewer, when it has one.
     sender = None
-    if args.command in ("show", "send", "refresh", "status"):
+    if args.command in ("show", "show-last", "send", "refresh", "status"):
         sender = own_inbox(os.environ.get("HERDR_BIN_PATH", "herdr"), os.environ.get("HERDR_PANE_ID"))
 
     if args.command == "show":
         return _show_file(args.path.expanduser().resolve(), args.draw, sender)
+
+    if args.command == "show-last":
+        return show_last(os.environ.get("HERDR_BIN_PATH", "herdr"), os.environ.get("HERDR_PANE_ID"), sender)
 
     if args.command == "show-clicked":
         url = os.environ.get("HERDR_PLUGIN_CLICKED_URL", "")
